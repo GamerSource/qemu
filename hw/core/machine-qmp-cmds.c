@@ -223,6 +223,11 @@ MachineInfoList *qmp_query_machines(Error **errp)
             info->alias = g_strdup(mc->alias);
         }
 
+        if (strcmp(mc->name, MACHINE_GET_CLASS(current_machine)->name) == 0) {
+            info->has_is_current = true;
+            info->is_current = true;
+        }
+
         info->name = g_strdup(mc->name);
         info->cpu_max = !mc->max_cpus ? 1 : mc->max_cpus;
         info->hotpluggable_cpus = mc->has_hotpluggable_cpus;
