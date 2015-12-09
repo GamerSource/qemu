@@ -898,7 +898,7 @@ void job_start(Job *job)
     job->co = qemu_coroutine_create(job_co_entry, job);
     job->pause_count--;
     job->busy = true;
-    job->paused = false;
+    job->paused = job->pause_count > 0;
     job_state_transition(job, JOB_STATUS_RUNNING);
     aio_co_enter(job->aio_context, job->co);
 }
