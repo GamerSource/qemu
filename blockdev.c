@@ -3550,7 +3550,7 @@ static BlockJob *do_drive_backup(DriveBackup *backup, JobTxn *txn,
     job = backup_job_create(backup->job_id, bs, target_bs, backup->speed,
                             backup->sync, bmap, backup->compress,
                             backup->on_source_error, backup->on_target_error,
-                            job_flags, NULL, NULL, txn, &local_err);
+                            job_flags, NULL, NULL, 0, txn, &local_err);
     bdrv_unref(target_bs);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
@@ -3660,7 +3660,7 @@ BlockJob *do_blockdev_backup(BlockdevBackup *backup, JobTxn *txn,
     job = backup_job_create(backup->job_id, bs, target_bs, backup->speed,
                             backup->sync, bmap, backup->compress,
                             backup->on_source_error, backup->on_target_error,
-                            job_flags, NULL, NULL, txn, &local_err);
+                            job_flags, NULL, NULL, 0, txn, &local_err);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
     }
