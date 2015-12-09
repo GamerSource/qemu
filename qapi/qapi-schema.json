@@ -61,6 +61,7 @@
         'query-migrate-cache-size',
         'query-tpm-models',
         'query-tpm-types',
+        'get_link_status',
         'ringbuf-read' ],
     'name-case-whitelist': [
         'ACPISlotType',             # DIMM, visible through query-acpi-ospm-status
