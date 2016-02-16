@@ -1348,6 +1348,16 @@ static void ohci_frame_boundary(void *opaque)
  */
 static int ohci_bus_start(OHCIState *ohci)
 {
+    if (!ohci->eof_timer) {
+        ohci->eof_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                        ohci_frame_boundary, ohci);
+    }
+    if (!ohci->eof_timer) {
+        trace_usb_ohci_bus_eof_timer_failed(ohci->name);
+        ohci_die(ohci);
+        return 0;
+    }
+
     trace_usb_ohci_start(ohci->name);
 
     /* Delay the first SOF event by one frame time as
