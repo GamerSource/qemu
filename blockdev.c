@@ -3362,7 +3362,7 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
             const char *devname = bdrv_get_device_name(di->bs);
             snprintf(di->targetfile, PATH_MAX, "%s/%s.raw", backup_dir, devname);
 
-            int flags = BDRV_O_RDWR|BDRV_O_CACHE_WB;
+            int flags = BDRV_O_RDWR;
             bdrv_img_create(di->targetfile, "raw", NULL, NULL, NULL,
                             di->size, flags, &local_err, false);
             if (local_err) {

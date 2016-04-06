@@ -253,7 +253,7 @@ void qmp_savevm_start(bool has_statefile, const char *statefile, Error **errp)
 {
     Error *local_err = NULL;
 
-    int bdrv_oflags = BDRV_O_CACHE_WB | BDRV_O_RDWR;
+    int bdrv_oflags = BDRV_O_RDWR;
     int ret;
 
     if (snap_state.state != SAVE_STATE_DONE) {
@@ -485,7 +485,7 @@ int load_state_from_blockdev(const char *filename)
     int ret;
 
     bs = bdrv_new();
-    ret = bdrv_open(&bs, filename, NULL, NULL, BDRV_O_CACHE_WB, &local_err);
+    ret = bdrv_open(&bs, filename, NULL, NULL, 0, &local_err);
     error_setg(&blocker, "block device is in use by load state");
     bdrv_op_block_all(bs, blocker);
 

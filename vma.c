@@ -277,7 +277,7 @@ static int extract_content(int argc, char **argv)
         } else if (di) {
             char *devfn = NULL;
             const char *format = NULL;
-            int flags = BDRV_O_RDWR|BDRV_O_CACHE_WB;
+            int flags = BDRV_O_RDWR;
             bool write_zero = true;
 
             if (readmap) {
@@ -558,7 +558,7 @@ static int create_archive(int argc, char **argv)
         Error *errp = NULL;
         BlockDriverState *bs = bdrv_new();
 
-        res = bdrv_open(&bs, path, NULL, NULL, BDRV_O_CACHE_WB, &errp);
+        res = bdrv_open(&bs, path, NULL, NULL, 0, &errp);
         if (res < 0) {
             unlink(archivename);
             g_error("bdrv_open '%s' failed - %s", path, error_get_pretty(errp));
