@@ -1,3 +1,4 @@
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qapi/qmp/qerror.h"
 #include "qemu/error-report.h"
@@ -13,6 +14,9 @@
 #include "qemu/timer.h"
 #include "sysemu/block-backend.h"
 #include "qapi/qmp/qstring.h"
+#include "qemu/rcu.h"
+#include "qemu/thread.h"
+#include "qemu/cutils.h"
 
 /* #define DEBUG_SAVEVM_STATE */
 

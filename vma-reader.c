@@ -11,14 +11,7 @@
  *
  */
 
-#include <stdio.h>
-#include <errno.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include "qemu/osdep.h"
 #include <glib.h>
 #include <uuid/uuid.h>
 
@@ -27,8 +20,6 @@
 #include "qemu/ratelimit.h"
 #include "vma.h"
 #include "block/block.h"
-
-#define BITS_PER_LONG  (sizeof(unsigned long) * CHAR_BIT)
 
 static unsigned char zero_vma_block[VMA_BLOCK_SIZE];
 

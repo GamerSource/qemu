@@ -11,22 +11,16 @@
  *
  */
 
-#include <stdio.h>
-#include <errno.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include "qemu/osdep.h"
 #include <glib.h>
 #include <uuid/uuid.h>
 
-#include "qemu-common.h"
 #include "vma.h"
 #include "block/block.h"
 #include "monitor/monitor.h"
 #include "qemu/main-loop.h"
+#include "qemu/coroutine.h"
+#include "qemu/cutils.h"
 
 #define DEBUG_VMA 0
 
