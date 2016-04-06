@@ -1333,7 +1333,7 @@ int64_t qmp_get_link_status(const char *name, Error **errp)
     bool ret;
 
     queues = qemu_find_net_clients_except(name, ncs,
-                                          NET_CLIENT_OPTIONS_KIND_MAX,
+                                          NET_CLIENT_OPTIONS_KIND__MAX,
                                           MAX_QUEUE_NUM);
 
     if (queues == 0) {
