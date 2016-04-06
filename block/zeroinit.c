@@ -160,9 +160,10 @@ static int zeroinit_has_zero_init(BlockDriverState *bs)
 
 static int64_t coroutine_fn zeroinit_co_get_block_status(BlockDriverState *bs,
                                                          int64_t sector_num,
-                                                         int nb_sectors, int *pnum)
+                                                         int nb_sectors, int *pnum,
+                                                         BlockDriverState **file)
 {
-    return bdrv_get_block_status(bs->file->bs, sector_num, nb_sectors, pnum);
+    return bdrv_get_block_status(bs->file->bs, sector_num, nb_sectors, pnum, file);
 }
 
 static coroutine_fn BlockAIOCB *zeroinit_aio_discard(BlockDriverState *bs,
