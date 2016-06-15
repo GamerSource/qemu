@@ -243,6 +243,8 @@ static void esp_do_dma(ESPState *s)
     len = s->dma_left;
     if (s->do_cmd) {
         trace_esp_do_dma(s->cmdlen, len);
+        assert (s->cmdlen <= sizeof(s->cmdbuf) &&
+                len <= sizeof(s->cmdbuf) - s->cmdlen);
         s->dma_memory_read(s->dma_opaque, &s->cmdbuf[s->cmdlen], len);
         s->ti_size = 0;
         s->cmdlen = 0;
@@ -342,7 +344,7 @@ static void handle_ti(ESPState *s)
     s->dma_counter = dmalen;
 
     if (s->do_cmd)
-        minlen = (dmalen < 32) ? dmalen : 32;
+        minlen = (dmalen < ESP_CMDBUF_SZ) ? dmalen : ESP_CMDBUF_SZ;
     else if (s->ti_size < 0)
         minlen = (dmalen < -s->ti_size) ? dmalen : -s->ti_size;
     else
@@ -448,7 +450,11 @@ void esp_reg_write(ESPState *s, uint32_t saddr, uint64_t val)
         break;
     case ESP_FIFO:
         if (s->do_cmd) {
-            s->cmdbuf[s->cmdlen++] = val & 0xff;
+            if (s->cmdlen < ESP_CMDBUF_SZ) {
+                s->cmdbuf[s->cmdlen++] = val & 0xff;
+            } else {
+                trace_esp_error_fifo_overrun();
+            }
         } else if (s->ti_size == TI_BUFSZ - 1) {
             trace_esp_error_fifo_overrun();
         } else {
