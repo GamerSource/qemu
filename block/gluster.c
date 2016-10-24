@@ -42,7 +42,7 @@
 #define GLUSTER_DEBUG_DEFAULT       4
 #define GLUSTER_DEBUG_MAX           9
 #define GLUSTER_OPT_LOGFILE         "logfile"
-#define GLUSTER_LOGFILE_DEFAULT     "-" /* handled in libgfapi as /dev/stderr */
+#define GLUSTER_LOGFILE_DEFAULT     NULL
 /*
  * Several versions of GlusterFS (3.12? -> 6.0.1) fail when the transfer size
  * is greater or equal to 1024 MiB, so we are limiting the transfer size to 512
@@ -424,6 +424,7 @@ static struct glfs *qemu_gluster_glfs_init(BlockdevOptionsGluster *gconf,
     int old_errno;
     SocketAddressList *server;
     unsigned long long port;
+    const char *logfile;
 
     glfs = glfs_find_preopened(gconf->volume);
     if (glfs) {
@@ -466,9 +467,15 @@ static struct glfs *qemu_gluster_glfs_init(BlockdevOptionsGluster *gconf,
         }
     }
 
-    ret = glfs_set_logging(glfs, gconf->logfile, gconf->debug);
-    if (ret < 0) {
-        goto out;
+    logfile = gconf->logfile;
+    if (!logfile && !is_daemonized()) {
+        logfile = "-";
+    }
+    if (logfile) {
+        ret = glfs_set_logging(glfs, logfile, gconf->debug);
+        if (ret < 0) {
+            goto out;
+        }
     }
 
     ret = glfs_init(glfs);
