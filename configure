@@ -499,6 +499,8 @@ docker="no"
 debug_mutex="no"
 libpmem=""
 default_devices="yes"
+libudev="no"
+vma=""
 
 # cross compilers defaults, can be overridden with --cross-cc-ARCH
 cross_cc_aarch64="aarch64-linux-gnu-gcc"
@@ -1543,6 +1545,10 @@ for opt do
   ;;
   --disable-libpmem) libpmem=no
   ;;
+  --enable-vma) vma=yes
+  ;;
+  --disable-vma) vma=no
+  ;;
   *)
       echo "ERROR: unknown option $opt"
       echo "Try '$0 --help' for more information"
@@ -1842,6 +1848,7 @@ disabled with --disable-FEATURE, default is enabled if available:
   capstone        capstone disassembler support
   debug-mutex     mutex debugging support
   libpmem         libpmem support
+  vma             VMA archive backend
 
 NOTE: The object files are built at the place where configure is launched
 EOF
@@ -4403,6 +4410,22 @@ EOF
 fi
 
 ##########################################
+# vma probe
+if test "$vma" != "no" ; then
+  if $pkg_config --exact-version=0.1.0 vma; then
+    vma="yes"
+    vma_cflags=$($pkg_config --cflags vma)
+    vma_libs=$($pkg_config --libs vma)
+  else
+    if test "$vma" = "yes" ; then
+      feature_not_found "VMA Archive backend support" \
+          "Install libvma devel"
+    fi
+    vma="no"
+  fi
+fi
+
+##########################################
 # signalfd probe
 signalfd="no"
 cat > $TMPC << EOF
@@ -6481,6 +6504,17 @@ echo "docker            $docker"
 echo "libpmem support   $libpmem"
 echo "libudev           $libudev"
 echo "default devices   $default_devices"
+echo "VMA support       $vma"
+
+if test "$sdl_too_old" = "yes"; then
+echo "-> Your SDL version is too old - please upgrade to have SDL support"
+fi
+
+if test "$sdlabi" = "1.2"; then
+    echo
+    echo "WARNING: Use of SDL 1.2 is deprecated and will be removed in"
+    echo "WARNING: future releases. Please switch to using SDL 2.0"
+fi
 
 if test "$supported_cpu" = "no"; then
     echo
@@ -6981,6 +7015,12 @@ if test "$usb_redir" = "yes" ; then
   echo "CONFIG_USB_REDIR=y" >> $config_host_mak
   echo "USB_REDIR_CFLAGS=$usb_redir_cflags" >> $config_host_mak
   echo "USB_REDIR_LIBS=$usb_redir_libs" >> $config_host_mak
+fi
+
+if test "$vma" = "yes" ; then
+  echo "CONFIG_VMA=y" >> $config_host_mak
+  echo "VMA_CFLAGS=$vma_cflags" >> $config_host_mak
+  echo "VMA_LIBS=$vma_libs" >> $config_host_mak
 fi
 
 if test "$opengl" = "yes" ; then
