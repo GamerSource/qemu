@@ -41,6 +41,7 @@ typedef struct BackupBlockJob {
     /* bitmap for sync=incremental */
     BdrvDirtyBitmap *sync_bitmap;
     MirrorSyncMode sync_mode;
+    BackupDumpFunc *dump_cb;
     BlockdevOnError on_source_error;
     BlockdevOnError on_target_error;
     CoRwlock flush_rwlock;
@@ -130,12 +131,20 @@ static int coroutine_fn backup_cow_with_bounce_buffer(BackupBlockJob *job,
     }
 
     if (qemu_iovec_is_zero(&qiov)) {
-        ret = blk_co_pwrite_zeroes(job->target, start,
-                                   qiov.size, write_flags | BDRV_REQ_MAY_UNMAP);
+        if (job->dump_cb) {
+            ret = job->dump_cb(job->common.job.opaque, job->target, start, qiov.size, NULL);
+        } else {
+            ret = blk_co_pwrite_zeroes(job->target, start,
+                                       qiov.size, write_flags | BDRV_REQ_MAY_UNMAP);
+        }
     } else {
-        ret = blk_co_pwritev(job->target, start,
-                             qiov.size, &qiov, write_flags |
-                             (job->compress ? BDRV_REQ_WRITE_COMPRESSED : 0));
+        if (job->dump_cb) {
+            ret = job->dump_cb(job->common.job.opaque, job->target, start, qiov.size, *bounce_buffer);
+        } else {
+            ret = blk_co_pwritev(job->target, start,
+                                 qiov.size, &qiov, write_flags |
+                                 (job->compress ? BDRV_REQ_WRITE_COMPRESSED : 0));
+        }
     }
     if (ret < 0) {
         trace_backup_do_cow_write_fail(job, start, ret);
@@ -213,7 +222,11 @@ static int coroutine_fn backup_do_cow(BackupBlockJob *job,
         trace_backup_do_cow_process(job, start);
 
         if (job->use_copy_range) {
-            ret = backup_cow_with_offload(job, start, end, is_write_notifier);
+            if (job->dump_cb) {
+                ret = - 1;
+            } else {
+                ret = backup_cow_with_offload(job, start, end, is_write_notifier);
+            }
             if (ret < 0) {
                 job->use_copy_range = false;
             }
@@ -297,7 +310,9 @@ static void backup_abort(Job *job)
 static void backup_clean(Job *job)
 {
     BackupBlockJob *s = container_of(job, BackupBlockJob, common.job);
-    assert(s->target);
+    if (!s->target) {
+        return;
+    }
     blk_unref(s->target);
     s->target = NULL;
 }
@@ -306,7 +321,9 @@ static void backup_attached_aio_context(BlockJob *job, AioContext *aio_context)
 {
     BackupBlockJob *s = container_of(job, BackupBlockJob, common);
 
-    blk_set_aio_context(s->target, aio_context);
+    if (s->target) {
+        blk_set_aio_context(s->target, aio_context);
+    }
 }
 
 void backup_do_checkpoint(BlockJob *job, Error **errp)
@@ -347,9 +364,11 @@ static BlockErrorAction backup_error_action(BackupBlockJob *job,
     if (read) {
         return block_job_error_action(&job->common, job->on_source_error,
                                       true, error);
-    } else {
+    } else if (job->target) {
         return block_job_error_action(&job->common, job->on_target_error,
                                       false, error);
+    } else {
+        return BLOCK_ERROR_ACTION_REPORT;
     }
 }
 
@@ -571,6 +590,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
                   BlockdevOnError on_source_error,
                   BlockdevOnError on_target_error,
                   int creation_flags,
+                  BackupDumpFunc *dump_cb,
                   BlockCompletionFunc *cb, void *opaque,
                   int pause_count,
                   JobTxn *txn, Error **errp)
@@ -581,7 +601,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
     int ret;
 
     assert(bs);
-    assert(target);
+    assert(target || dump_cb);
 
     if (bs == target) {
         error_setg(errp, "Source and target cannot be the same");
@@ -594,13 +614,13 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
         return NULL;
     }
 
-    if (!bdrv_is_inserted(target)) {
+    if (target && !bdrv_is_inserted(target)) {
         error_setg(errp, "Device is not inserted: %s",
                    bdrv_get_device_name(target));
         return NULL;
     }
 
-    if (compress && target->drv->bdrv_co_pwritev_compressed == NULL) {
+    if (target && compress && target->drv->bdrv_co_pwritev_compressed == NULL) {
         error_setg(errp, "Compression is not supported for this drive %s",
                    bdrv_get_device_name(target));
         return NULL;
@@ -610,7 +630,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
         return NULL;
     }
 
-    if (bdrv_op_is_blocked(target, BLOCK_OP_TYPE_BACKUP_TARGET, errp)) {
+    if (target && bdrv_op_is_blocked(target, BLOCK_OP_TYPE_BACKUP_TARGET, errp)) {
         return NULL;
     }
 
@@ -650,15 +670,18 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
         goto error;
     }
 
-    /* The target must match the source in size, so no resize here either */
-    job->target = blk_new(BLK_PERM_WRITE,
-                          BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE |
-                          BLK_PERM_WRITE_UNCHANGED | BLK_PERM_GRAPH_MOD);
-    ret = blk_insert_bs(job->target, target, errp);
-    if (ret < 0) {
-        goto error;
+    if (target) {
+        /* The target must match the source in size, so no resize here either */
+        job->target = blk_new(BLK_PERM_WRITE,
+                              BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE |
+                              BLK_PERM_WRITE_UNCHANGED | BLK_PERM_GRAPH_MOD);
+        ret = blk_insert_bs(job->target, target, errp);
+        if (ret < 0) {
+            goto error;
+        }
     }
 
+    job->dump_cb = dump_cb;
     job->on_source_error = on_source_error;
     job->on_target_error = on_target_error;
     job->sync_mode = sync_mode;
@@ -669,6 +692,9 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
     /* Detect image-fleecing (and similar) schemes */
     job->serialize_target_writes = bdrv_chain_contains(target, bs);
 
+    if (!target) {
+        goto use_default_cluster_size;
+    }
     /* If there is no backing file on the target, we cannot rely on COW if our
      * backup cluster size is smaller than the target cluster size. Even for
      * targets with a backing file, try to avoid COW if possible. */
@@ -693,18 +719,35 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
         /* Not fatal; just trudge on ahead. */
         job->cluster_size = BACKUP_CLUSTER_SIZE_DEFAULT;
     } else {
-        job->cluster_size = MAX(BACKUP_CLUSTER_SIZE_DEFAULT, bdi.cluster_size);
+        use_default_cluster_size:
+        ret = bdrv_get_info(bs, &bdi);
+        if (ret < 0) {
+            job->cluster_size = BACKUP_CLUSTER_SIZE_DEFAULT;
+        } else {
+            /* round down to nearest BACKUP_CLUSTER_SIZE_DEFAULT */
+            job->cluster_size = (bdi.cluster_size / BACKUP_CLUSTER_SIZE_DEFAULT) * BACKUP_CLUSTER_SIZE_DEFAULT;
+            if (job->cluster_size == 0) {
+                /* but we can't go below it */
+                job->cluster_size = BACKUP_CLUSTER_SIZE_DEFAULT;
+            }
+        }
     }
-    job->use_copy_range = true;
-    job->copy_range_size = MIN_NON_ZERO(blk_get_max_transfer(job->common.blk),
-                                        blk_get_max_transfer(job->target));
-    job->copy_range_size = MAX(job->cluster_size,
-                               QEMU_ALIGN_UP(job->copy_range_size,
-                                             job->cluster_size));
+    if (target) {
+        job->use_copy_range = true;
+        job->copy_range_size = MIN_NON_ZERO(blk_get_max_transfer(job->common.blk),
+                                            blk_get_max_transfer(job->target));
+        job->copy_range_size = MAX(job->cluster_size,
+                                   QEMU_ALIGN_UP(job->copy_range_size,
+                                                 job->cluster_size));
+    } else {
+        job->use_copy_range = false;
+    }
 
-    /* Required permissions are already taken with target's blk_new() */
-    block_job_add_bdrv(&job->common, "target", target, 0, BLK_PERM_ALL,
-                       &error_abort);
+    if (target) {
+        /* Required permissions are already taken with target's blk_new() */
+        block_job_add_bdrv(&job->common, "target", target, 0, BLK_PERM_ALL,
+                           &error_abort);
+    }
     job->len = len;
     job->common.job.pause_count += pause_count;
 

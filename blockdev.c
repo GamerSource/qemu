@@ -31,7 +31,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/uuid.h"
 #include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 #include "hw/block/block.h"
@@ -63,6 +62,7 @@
 #include "qemu/cutils.h"
 #include "qemu/help_option.h"
 #include "qemu/throttle-options.h"
+#include "vma.h"
 
 static QTAILQ_HEAD(, BlockDriverState) monitor_bdrv_states =
     QTAILQ_HEAD_INITIALIZER(monitor_bdrv_states);
@@ -3160,15 +3160,14 @@ out:
 static struct PVEBackupState {
     Error *error;
     bool cancel;
-    QemuUUID uuid;
+    uuid_t uuid;
     char uuid_str[37];
     int64_t speed;
     time_t start_time;
     time_t end_time;
     char *backup_file;
-    Object *vmaobj;
+    VmaWriter *vmaw;
     GList *di_list;
-    size_t next_job;
     size_t total;
     size_t transferred;
     size_t zero_bytes;
@@ -3187,6 +3186,71 @@ typedef struct PVEBackupDevInfo {
 
 static void pvebackup_run_next_job(void);
 
+static int pvebackup_dump_cb(void *opaque, BlockBackend *target,
+                             uint64_t start, uint64_t bytes,
+                             const void *pbuf)
+{
+    const uint64_t size = bytes;
+    const unsigned char *buf = pbuf;
+    PVEBackupDevInfo *di = opaque;
+
+    if (backup_state.cancel) {
+        return size; // return success
+    }
+
+    uint64_t cluster_num = start / VMA_CLUSTER_SIZE;
+    if ((cluster_num * VMA_CLUSTER_SIZE) != start) {
+        if (!backup_state.error) {
+            error_setg(&backup_state.error,
+                       "got unaligned write inside backup dump "
+                       "callback (sector %ld)", start);
+        }
+        return -1; // not aligned to cluster size
+    }
+
+    int ret = -1;
+
+    if (backup_state.vmaw) {
+        size_t zero_bytes = 0;
+        uint64_t remaining = size;
+        while (remaining > 0) {
+            ret = vma_writer_write(backup_state.vmaw, di->dev_id, cluster_num,
+                                   buf, &zero_bytes);
+            ++cluster_num;
+            if (buf) {
+                buf += VMA_CLUSTER_SIZE;
+            }
+            if (ret < 0) {
+                if (!backup_state.error) {
+                    vma_writer_error_propagate(backup_state.vmaw, &backup_state.error);
+                }
+                if (di->bs && di->bs->job) {
+                    job_cancel(&di->bs->job->job, true);
+                }
+                break;
+            } else {
+                backup_state.zero_bytes += zero_bytes;
+                if (remaining >= VMA_CLUSTER_SIZE) {
+                    backup_state.transferred += VMA_CLUSTER_SIZE;
+                    remaining -= VMA_CLUSTER_SIZE;
+                } else {
+                    backup_state.transferred += remaining;
+                    remaining = 0;
+                }
+            }
+        }
+    } else {
+        if (!buf) {
+            backup_state.zero_bytes += size;
+        }
+        backup_state.transferred += size;
+    }
+
+    // Note: always return success, because we want that writes succeed anyways.
+
+    return size;
+}
+
 static void pvebackup_cleanup(void)
 {
     qemu_mutex_lock(&backup_state.backup_mutex);
@@ -3198,14 +3262,23 @@ static void pvebackup_cleanup(void)
 
     backup_state.end_time = time(NULL);
 
-    if (backup_state.vmaobj) {
-        object_unparent(backup_state.vmaobj);
-        backup_state.vmaobj = NULL;
+    if (backup_state.vmaw) {
+        Error *local_err = NULL;
+        vma_writer_close(backup_state.vmaw, &local_err);
+        error_propagate(&backup_state.error, local_err);
+        backup_state.vmaw = NULL;
     }
 
     g_list_free(backup_state.di_list);
     backup_state.di_list = NULL;
     qemu_mutex_unlock(&backup_state.backup_mutex);
+}
+
+static void coroutine_fn backup_close_vma_stream(void *opaque)
+{
+    PVEBackupDevInfo *di = opaque;
+
+    vma_writer_close_stream(backup_state.vmaw, di->dev_id);
 }
 
 static void pvebackup_complete_cb(void *opaque, int ret)
@@ -3224,9 +3297,9 @@ static void pvebackup_complete_cb(void *opaque, int ret)
     di->bs = NULL;
     di->target = NULL;
 
-    if (backup_state.vmaobj) {
-        object_unparent(backup_state.vmaobj);
-        backup_state.vmaobj = NULL;
+    if (backup_state.vmaw) {
+        Coroutine *co = qemu_coroutine_create(backup_close_vma_stream, di);
+        qemu_coroutine_enter(co);
     }
 
     // remove self from job queue
@@ -3254,14 +3327,9 @@ static void pvebackup_cancel(void *opaque)
         error_setg(&backup_state.error, "backup cancelled");
     }
 
-    if (backup_state.vmaobj) {
-        Error *err;
+    if (backup_state.vmaw) {
         /* make sure vma writer does not block anymore */
-        if (!object_set_props(backup_state.vmaobj, &err, "blocked", "yes", NULL)) {
-            if (err) {
-                error_report_err(err);
-            }
-        }
+        vma_writer_set_error(backup_state.vmaw, "backup cancelled");
     }
 
     GList *l = backup_state.di_list;
@@ -3292,18 +3360,14 @@ void qmp_backup_cancel(Error **errp)
     Coroutine *co = qemu_coroutine_create(pvebackup_cancel, NULL);
     qemu_coroutine_enter(co);
 
-    while (backup_state.vmaobj) {
-        /* FIXME: Find something better for this */
+    while (backup_state.vmaw) {
+        /* vma writer use main aio context */
         aio_poll(qemu_get_aio_context(), true);
     }
 }
 
-void vma_object_add_config_file(Object *obj, const char *name, 
-                                const char *contents, size_t len,
-                                Error **errp);
 static int config_to_vma(const char *file, BackupFormat format,
-                         Object *vmaobj,
-                         const char *backup_dir,
+                         const char *backup_dir, VmaWriter *vmaw,
                          Error **errp)
 {
     char *cdata = NULL;
@@ -3317,7 +3381,12 @@ static int config_to_vma(const char *file, BackupFormat format,
     char *basename = g_path_get_basename(file);
 
     if (format == BACKUP_FORMAT_VMA) {
-        vma_object_add_config_file(vmaobj, basename, cdata, clen, errp);
+        if (vma_writer_add_config(vmaw, basename, cdata, clen) != 0) {
+            error_setg(errp, "unable to add %s config data to vma archive", file);
+            g_free(cdata);
+            g_free(basename);
+            return 1;
+        }
     } else if (format == BACKUP_FORMAT_DIR) {
         char config_path[PATH_MAX];
         snprintf(config_path, PATH_MAX, "%s/%s", backup_dir, basename);
@@ -3334,28 +3403,30 @@ static int config_to_vma(const char *file, BackupFormat format,
     return 0;
 }
 
+bool job_should_pause(Job *job);
 static void pvebackup_run_next_job(void)
 {
     qemu_mutex_lock(&backup_state.backup_mutex);
 
-    GList *next = g_list_nth(backup_state.di_list, backup_state.next_job);
-    while (next) {
-        PVEBackupDevInfo *di = (PVEBackupDevInfo *)next->data;
-        backup_state.next_job++;
+    GList *l = backup_state.di_list;
+    while (l) {
+        PVEBackupDevInfo *di = (PVEBackupDevInfo *)l->data;
+        l = g_list_next(l);
         if (!di->completed && di->bs && di->bs->job) {
             BlockJob *job = di->bs->job;
             AioContext *aio_context = blk_get_aio_context(job->blk);
             aio_context_acquire(aio_context);
             qemu_mutex_unlock(&backup_state.backup_mutex);
-            if (backup_state.error || backup_state.cancel) {
-                job_cancel_sync(job);
-            } else {
-                job_resume(job);
+            if (job_should_pause(&job->job)) {
+                if (backup_state.error || backup_state.cancel) {
+                    job_cancel_sync(&job->job);
+                } else {
+                    job_resume(&job->job);
+                }
             }
             aio_context_release(aio_context);
             return;
         }
-        next = g_list_next(next);
     }
     qemu_mutex_unlock(&backup_state.backup_mutex);
 
@@ -3366,7 +3437,7 @@ static void pvebackup_run_next_job(void)
 UuidInfo *qmp_backup(const char *backup_file, bool has_format,
                     BackupFormat format,
                     bool has_config_file, const char *config_file,
-                    bool has_firewall_file, const char *firewall_file,
+		    bool has_firewall_file, const char *firewall_file,
                     bool has_devlist, const char *devlist,
                     bool has_speed, int64_t speed, Error **errp)
 {
@@ -3374,7 +3445,8 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
     BlockDriverState *bs = NULL;
     const char *backup_dir = NULL;
     Error *local_err = NULL;
-    QemuUUID uuid;
+    uuid_t uuid;
+    VmaWriter *vmaw = NULL;
     gchar **devs = NULL;
     GList *di_list = NULL;
     GList *l;
@@ -3386,7 +3458,7 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
         backup_state.backup_mutex_initialized = true;
     }
 
-    if (backup_state.di_list || backup_state.vmaobj) {
+    if (backup_state.di_list) {
         error_set(errp, ERROR_CLASS_GENERIC_ERROR,
                   "previous backup not finished");
         return NULL;
@@ -3461,40 +3533,28 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
         total += size;
     }
 
-    qemu_uuid_generate(&uuid);
+    uuid_generate(uuid);
 
     if (format == BACKUP_FORMAT_VMA) {
-        char uuidstr[UUID_FMT_LEN+1];
-        qemu_uuid_unparse(&uuid, uuidstr);
-        uuidstr[UUID_FMT_LEN] = 0;
-        backup_state.vmaobj =
-            object_new_with_props("vma", object_get_objects_root(),
-                                  "vma-backup-obj", &local_err,
-                                  "filename", backup_file,
-                                  "uuid", uuidstr,
-                                  NULL);
-        if (!backup_state.vmaobj) {
+        vmaw = vma_writer_create(backup_file, uuid, &local_err);
+        if (!vmaw) {
             if (local_err) {
                 error_propagate(errp, local_err);
             }
             goto err;
         }
 
+        /* register all devices for vma writer */
         l = di_list;
         while (l) {
-            QDict *options = qdict_new();
-
             PVEBackupDevInfo *di = (PVEBackupDevInfo *)l->data;
             l = g_list_next(l);
 
             const char *devname = bdrv_get_device_name(di->bs);
-            snprintf(di->targetfile, PATH_MAX, "vma-backup-obj/%s.raw", devname);
-
-            qdict_put(options, "driver", qstring_from_str("vma-drive"));
-            qdict_put(options, "size", qint_from_int(di->size));
-            di->target = bdrv_open(di->targetfile, NULL, options, BDRV_O_RDWR, &local_err);
-            if (!di->target) {
-                error_propagate(errp, local_err);
+            di->dev_id = vma_writer_register_stream(vmaw, devname, di->size);
+            if (di->dev_id <= 0) {
+                error_set(errp, ERROR_CLASS_GENERIC_ERROR,
+                          "register_stream failed");
                 goto err;
             }
         }
@@ -3535,14 +3595,14 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
 
     /* add configuration file to archive */
     if (has_config_file) {
-        if(config_to_vma(config_file, format, backup_state.vmaobj, backup_dir, errp) != 0) {
+        if (config_to_vma(config_file, format, backup_dir, vmaw, errp) != 0) {
             goto err;
         }
     }
 
     /* add firewall file to archive */
     if (has_firewall_file) {
-        if(config_to_vma(firewall_file, format, backup_state.vmaobj, backup_dir, errp) != 0) {
+        if (config_to_vma(firewall_file, format, backup_dir, vmaw, errp) != 0) {
             goto err;
         }
     }
@@ -3565,12 +3625,13 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
     }
     backup_state.backup_file = g_strdup(backup_file);
 
-    memcpy(&backup_state.uuid, &uuid, sizeof(uuid));
-    qemu_uuid_unparse(&uuid, backup_state.uuid_str);
+    backup_state.vmaw = vmaw;
+
+    uuid_copy(backup_state.uuid, uuid);
+    uuid_unparse_lower(uuid, backup_state.uuid_str);
 
     qemu_mutex_lock(&backup_state.backup_mutex);
     backup_state.di_list = di_list;
-    backup_state.next_job = 0;
 
     backup_state.total = total;
     backup_state.transferred = 0;
@@ -3581,20 +3642,20 @@ UuidInfo *qmp_backup(const char *backup_file, bool has_format,
     while (l) {
         PVEBackupDevInfo *di = (PVEBackupDevInfo *)l->data;
         l = g_list_next(l);
-
         job = backup_job_create(NULL, di->bs, di->target, speed, MIRROR_SYNC_MODE_FULL, NULL,
                                 false, BLOCKDEV_ON_ERROR_REPORT, BLOCKDEV_ON_ERROR_REPORT,
                                 JOB_DEFAULT,
-                                pvebackup_complete_cb, di, 2, NULL, &local_err);
-        if (di->target) {
-            bdrv_unref(di->target);
-            di->target = NULL;
-        }
+                                pvebackup_dump_cb, pvebackup_complete_cb, di,
+                                1, NULL, &local_err);
         if (!job || local_err != NULL) {
             error_setg(&backup_state.error, "backup_job_create failed");
             pvebackup_cancel(NULL);
         } else {
             job_start(&job->job);
+        }
+        if (di->target) {
+            bdrv_unref(di->target);
+            di->target = NULL;
         }
     }
 
@@ -3631,9 +3692,10 @@ err:
         g_strfreev(devs);
     }
 
-    if (backup_state.vmaobj) {
-        object_unparent(backup_state.vmaobj);
-        backup_state.vmaobj = NULL;
+    if (vmaw) {
+        Error *err = NULL;
+        vma_writer_close(vmaw, &err);
+        unlink(backup_file);
     }
 
     if (backup_dir) {
@@ -4086,7 +4148,7 @@ static BlockJob *do_drive_backup(DriveBackup *backup, JobTxn *txn,
     job = backup_job_create(backup->job_id, bs, target_bs, backup->speed,
                             backup->sync, bmap, backup->compress,
                             backup->on_source_error, backup->on_target_error,
-                            job_flags, NULL, NULL, 0, txn, &local_err);
+                            job_flags, NULL, NULL, NULL, 0, txn, &local_err);
     bdrv_unref(target_bs);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
@@ -4196,7 +4258,7 @@ BlockJob *do_blockdev_backup(BlockdevBackup *backup, JobTxn *txn,
     job = backup_job_create(backup->job_id, bs, target_bs, backup->speed,
                             backup->sync, bmap, backup->compress,
                             backup->on_source_error, backup->on_target_error,
-                            job_flags, NULL, NULL, 0, txn, &local_err);
+                            job_flags, NULL, NULL, NULL, 0, txn, &local_err);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
     }
