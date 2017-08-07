@@ -249,7 +249,8 @@ static bool job_started(Job *job)
     return job->co;
 }
 
-static bool job_should_pause(Job *job)
+bool job_should_pause(Job *job);
+bool job_should_pause(Job *job)
 {
     return job->pause_count > 0;
 }
