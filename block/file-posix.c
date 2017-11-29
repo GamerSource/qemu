@@ -428,7 +428,7 @@ static QemuOptsList raw_runtime_opts = {
         {
             .name = "locking",
             .type = QEMU_OPT_STRING,
-            .help = "file locking mode (on/off/auto, default: auto)",
+            .help = "file locking mode (on/off/auto, default: off)",
         },
         {
             .name = "pr-manager",
@@ -517,7 +517,7 @@ static int raw_open_common(BlockDriverState *bs, QDict *options,
         s->use_lock = false;
         break;
     case ON_OFF_AUTO_AUTO:
-        s->use_lock = qemu_has_ofd_lock();
+        s->use_lock = false;
         break;
     default:
         abort();
