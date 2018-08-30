@@ -2857,6 +2857,7 @@ static void user_register_global_props(void)
 int main(int argc, char **argv, char **envp)
 {
     int i;
+    long vm_id;
     int snapshot, linux_boot;
     const char *initrd_filename;
     const char *kernel_filename, *kernel_cmdline;
@@ -3567,6 +3568,13 @@ int main(int argc, char **argv, char **envp)
             case QEMU_OPTION_smp:
                 if (!qemu_opts_parse_noisily(qemu_find_opts("smp-opts"),
                                              optarg, true)) {
+                    exit(1);
+                }
+                break;
+            case QEMU_OPTION_id:
+                vm_id = strtol(optarg, (char **)&optarg, 10);
+                if (*optarg != 0 || vm_id < 100 || vm_id > INT_MAX) {
+                    error_report("invalid -id argument %s", optarg);
                     exit(1);
                 }
                 break;
