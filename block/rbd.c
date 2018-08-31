@@ -636,6 +636,8 @@ static int qemu_rbd_connect(rados_t *cluster, rados_ioctx_t *io_ctx,
         rados_conf_set(*cluster, "rbd_cache", "false");
     }
 
+    rados_conf_set(*cluster, "rbd_cache_writethrough_until_flush", "false");
+
     r = rados_connect(*cluster);
     if (r < 0) {
         error_setg_errno(errp, -r, "error connecting");
