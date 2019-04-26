@@ -4284,7 +4284,8 @@
   'data': { 'filename':         'str',
             'size':             'size',
             '*preallocation':   'PreallocMode',
-            '*nocow':           'bool' } }
+            '*nocow':           'bool',
+            '*locking':         'OnOffAuto' } }
 
 ##
 # @BlockdevCreateOptionsGluster:
