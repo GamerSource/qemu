@@ -154,6 +154,7 @@ static void coroutine_fn block_state_write_entry(void *opaque) {
     BlkRwCo *rwco = opaque;
     rwco->ret = blk_co_pwritev(snap_state.target, rwco->offset, rwco->qiov->size,
                                rwco->qiov, 0);
+    aio_wait_kick();
 }
 
 static ssize_t block_state_writev_buffer(void *opaque, struct iovec *iov,
