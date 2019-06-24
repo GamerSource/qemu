@@ -197,6 +197,8 @@ static void process_savevm_cleanup(void *opaque)
     int ret;
     qemu_bh_delete(snap_state.cleanup_bh);
     snap_state.cleanup_bh = NULL;
+    qemu_savevm_state_cleanup();
+
     qemu_mutex_unlock_iothread();
     qemu_thread_join(&snap_state.thread);
     qemu_mutex_lock_iothread();
@@ -273,7 +275,6 @@ static void *process_savevm_thread(void *opaque)
                     save_snapshot_error("qemu_savevm_state_iterate error %d", ret);
                     break;
             }
-            qemu_savevm_state_cleanup();
             DPRINTF("save complete\n");
             break;
         }
