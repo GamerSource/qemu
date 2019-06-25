@@ -4616,10 +4616,7 @@ void monitor_init(Chardev *chr, int flags)
     bool use_readline = flags & MONITOR_USE_READLINE;
 
     /* Note: we run QMP monitor in I/O thread when @chr supports that */
-    monitor_data_init(mon, false,
-                      (flags & MONITOR_USE_CONTROL)
-                      && qemu_chr_has_feature(chr,
-                                              QEMU_CHAR_FEATURE_GCONTEXT));
+    monitor_data_init(mon, false, false);
 
     qemu_chr_fe_init(&mon->chr, chr, &error_abort);
     mon->flags = flags;
