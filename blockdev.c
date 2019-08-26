@@ -3209,6 +3209,7 @@ static int pvebackup_dump_cb(void *opaque, BlockBackend *target,
     const uint64_t size = bytes;
     const unsigned char *buf = pbuf;
     PVEBackupDevInfo *di = opaque;
+    BlockJob *job;
 
     if (backup_state.cancel) {
         return size; // return success
@@ -3240,8 +3241,15 @@ static int pvebackup_dump_cb(void *opaque, BlockBackend *target,
                 if (!backup_state.error) {
                     vma_writer_error_propagate(backup_state.vmaw, &backup_state.error);
                 }
-                if (di->bs && di->bs->job) {
-                    job_cancel(&di->bs->job->job, true);
+                for (job = block_job_next(NULL); job; job = block_job_next(job)) {
+                    if (block_job_has_bdrv(job, blk_bs(target))) {
+                        AioContext *aio_context = job->job.aio_context;
+                        aio_context_acquire(aio_context);
+
+                        job_cancel(&job->job, true);
+
+                        aio_context_release(aio_context);
+                    }
                 }
                 break;
             } else {
@@ -3353,14 +3361,16 @@ static void pvebackup_cancel(void *opaque)
         PVEBackupDevInfo *di = (PVEBackupDevInfo *)l->data;
         l = g_list_next(l);
         if (!di->completed && di->bs) {
-            BlockJob *job = di->bs->job;
-            if (job) {
-                AioContext *aio_context = blk_get_aio_context(job->blk);
-                aio_context_acquire(aio_context);
-                if (!di->completed) {
-                    job_cancel(&job->job, false);
+            for (BlockJob *job = block_job_next(NULL); job; job = block_job_next(job)) {
+                if (block_job_has_bdrv(job, di->bs)) {
+                    AioContext *aio_context = job->job.aio_context;
+                    aio_context_acquire(aio_context);
+
+                    if (!di->completed) {
+                        job_cancel(&job->job, false);
+                    }
+                    aio_context_release(aio_context);
                 }
-                aio_context_release(aio_context);
             }
         }
     }
@@ -3428,20 +3438,24 @@ static void pvebackup_run_next_job(void)
     while (l) {
         PVEBackupDevInfo *di = (PVEBackupDevInfo *)l->data;
         l = g_list_next(l);
-        if (!di->completed && di->bs && di->bs->job) {
-            BlockJob *job = di->bs->job;
-            AioContext *aio_context = blk_get_aio_context(job->blk);
-            aio_context_acquire(aio_context);
-            qemu_mutex_unlock(&backup_state.backup_mutex);
-            if (job_should_pause(&job->job)) {
-                if (backup_state.error || backup_state.cancel) {
-                    job_cancel_sync(&job->job);
-                } else {
-                    job_resume(&job->job);
+        if (!di->completed && di->bs) {
+            for (BlockJob *job = block_job_next(NULL); job; job = block_job_next(job)) {
+                if (block_job_has_bdrv(job, di->bs)) {
+                    AioContext *aio_context = job->job.aio_context;
+                    aio_context_acquire(aio_context);
+
+                    qemu_mutex_unlock(&backup_state.backup_mutex);
+                    if (job_should_pause(&job->job)) {
+                        if (backup_state.error || backup_state.cancel) {
+                            job_cancel_sync(&job->job);
+                        } else {
+                            job_resume(&job->job);
+                        }
+                    }
+                    aio_context_release(aio_context);
+                    return;
                 }
             }
-            aio_context_release(aio_context);
-            return;
         }
     }
     qemu_mutex_unlock(&backup_state.backup_mutex);
