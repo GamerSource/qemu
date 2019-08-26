@@ -16,6 +16,7 @@
 
 #include "vma.h"
 #include "qemu-common.h"
+#include "qemu/module.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/cutils.h"
@@ -800,7 +801,9 @@ int main(int argc, char **argv)
     const char *cmdname;
     Error *main_loop_err = NULL;
 
-    error_set_progname(argv[0]);
+    error_init(argv[0]);
+    module_call_init(MODULE_INIT_TRACE);
+    qemu_init_exec_dir(argv[0]);
 
     if (qemu_init_main_loop(&main_loop_err)) {
         g_error("%s", error_get_pretty(main_loop_err));
