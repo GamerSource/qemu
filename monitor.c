@@ -356,11 +356,27 @@ static void qmp_request_free(QMPRequest *req)
     g_free(req);
 }
 
+static bool qmp_oob_enabled(Monitor *mon)
+{
+    return mon->qmp.capab[QMP_CAPABILITY_OOB];
+}
+
 /* Caller must hold mon->qmp.qmp_queue_lock */
 static void monitor_qmp_cleanup_req_queue_locked(Monitor *mon)
 {
+    bool need_resume =
+        (!qmp_oob_enabled(mon) && mon->qmp.qmp_requests->length > 0)
+        || mon->qmp.qmp_requests->length == QMP_REQ_QUEUE_LEN_MAX;
     while (!g_queue_is_empty(mon->qmp.qmp_requests)) {
         qmp_request_free(g_queue_pop_head(mon->qmp.qmp_requests));
+    }
+    if (need_resume) {
+        /*
+         * Pairs with the monitor_suspend() in handle_qmp_command() in case the
+         * queue gets cleared from a CH_EVENT_CLOSED event before the dispatch
+         * bh got scheduled.
+         */
+        monitor_resume(mon);
     }
 }
 
@@ -1155,11 +1171,6 @@ static void monitor_init_qmp_commands(void)
     QTAILQ_INIT(&qmp_cap_negotiation_commands);
     qmp_register_command(&qmp_cap_negotiation_commands, "qmp_capabilities",
                          qmp_marshal_qmp_capabilities, QCO_ALLOW_PRECONFIG);
-}
-
-static bool qmp_oob_enabled(Monitor *mon)
-{
-    return mon->qmp.capab[QMP_CAPABILITY_OOB];
 }
 
 static void monitor_qmp_caps_reset(Monitor *mon)
