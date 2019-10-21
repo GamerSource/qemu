@@ -199,12 +199,14 @@ int vma_writer_register_stream(VmaWriter *vmaw, const char *devname,
     return n;
 }
 
-static void vma_co_continue_write(void *opaque)
+static void coroutine_fn yield_until_fd_writable(int fd)
 {
-    VmaWriter *vmaw = opaque;
-
-    DPRINTF("vma_co_continue_write\n");
-    qemu_coroutine_enter(vmaw->co_writer);
+    assert(qemu_in_coroutine());
+    AioContext *ctx = qemu_get_current_aio_context();
+    aio_set_fd_handler(ctx, fd, false, NULL, (IOHandler *)qemu_coroutine_enter,
+                       NULL, qemu_coroutine_self());
+    qemu_coroutine_yield();
+    aio_set_fd_handler(ctx, fd, false, NULL, NULL, NULL, NULL);
 }
 
 static ssize_t coroutine_fn
@@ -224,14 +226,12 @@ vma_queue_write(VmaWriter *vmaw, const void *buf, size_t bytes)
     vmaw->co_writer = qemu_coroutine_self();
 
     while (done < bytes) {
-        aio_set_fd_handler(qemu_get_aio_context(), vmaw->fd, false, NULL, vma_co_continue_write, NULL, vmaw);
-        qemu_coroutine_yield();
-        aio_set_fd_handler(qemu_get_aio_context(), vmaw->fd, false, NULL, NULL, NULL, NULL);
         if (vmaw->status < 0) {
             DPRINTF("vma_queue_write detected canceled backup\n");
             done = -1;
             break;
         }
+        yield_until_fd_writable(vmaw->fd);
         ret = write(vmaw->fd, buf + done, bytes - done);
         if (ret > 0) {
             done += ret;
