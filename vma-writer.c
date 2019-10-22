@@ -705,9 +705,7 @@ int vma_writer_close(VmaWriter *vmaw, Error **errp)
 
     int i;
 
-    while (vmaw->co_writer) {
-        aio_poll(qemu_get_aio_context(), true);
-    }
+    qemu_co_mutex_lock(&vmaw->flush_lock); // wait for pending writes
 
     assert(vmaw->co_writer == NULL);
 
@@ -747,6 +745,8 @@ int vma_writer_close(VmaWriter *vmaw, Error **errp)
     if (vmaw->status < 0 && *errp == NULL) {
         error_setg(errp, "%s", vmaw->errmsg);
     }
+
+    qemu_co_mutex_unlock(&vmaw->flush_lock);
 
     return vmaw->status;
 }
