@@ -133,7 +133,12 @@ static int coroutine_fn backup_cow_with_bounce_buffer(BackupBlockJob *job,
 
     if (qemu_iovec_is_zero(&qiov)) {
         if (job->dump_cb) {
-            ret = job->dump_cb(job->common.job.opaque, job->target, start, qiov.size, NULL);
+            if (qiov.size == job->cluster_size) {
+                // Note: pass NULL to indicate that we want to write [0u8; cluster_size]
+                ret = job->dump_cb(job->common.job.opaque, job->target, start, qiov.size, NULL);
+            } else {
+                ret = job->dump_cb(job->common.job.opaque, job->target, start, qiov.size, *bounce_buffer);
+            }
         } else {
             ret = blk_co_pwrite_zeroes(job->target, start,
                                        qiov.size, write_flags | BDRV_REQ_MAY_UNMAP);
