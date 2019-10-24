@@ -579,6 +579,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
                   BlockdevOnError on_target_error,
                   int creation_flags,
                   BackupDumpFunc *dump_cb,
+                  int dump_cb_block_size,
                   BlockCompletionFunc *cb, void *opaque,
                   int pause_count,
                   JobTxn *txn, Error **errp)
@@ -649,7 +650,12 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
         goto error;
     }
 
-    cluster_size = backup_calculate_cluster_size(target ? target : bs, errp);
+    if (target) {
+        cluster_size = backup_calculate_cluster_size(target, errp);
+    } else {
+        cluster_size = dump_cb_block_size;
+    }
+
     if (cluster_size < 0) {
         goto error;
     }

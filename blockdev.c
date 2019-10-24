@@ -3524,6 +3524,7 @@ static void coroutine_fn pvebackup_co_start(void *opaque)
     GList *l;
     UuidInfo *uuid_info;
     BlockJob *job;
+    int dump_cb_block_size = -1;
 
     if (!backup_state.backup_mutex_initialized) {
         qemu_co_mutex_init(&backup_state.backup_mutex);
@@ -3611,6 +3612,7 @@ static void coroutine_fn pvebackup_co_start(void *opaque)
     uuid_generate(uuid);
 
     if (format == BACKUP_FORMAT_VMA) {
+        dump_cb_block_size = VMA_CLUSTER_SIZE;
         vmaw = vma_writer_create(task->backup_file, uuid, &local_err);
         if (!vmaw) {
             if (local_err) {
@@ -3718,8 +3720,8 @@ static void coroutine_fn pvebackup_co_start(void *opaque)
         l = g_list_next(l);
         job = backup_job_create(NULL, di->bs, di->target, backup_state.speed, MIRROR_SYNC_MODE_FULL, NULL,
                                 false, BLOCKDEV_ON_ERROR_REPORT, BLOCKDEV_ON_ERROR_REPORT,
-                                JOB_DEFAULT, pvebackup_co_dump_cb, pvebackup_complete_cb, di,
-                                1, NULL, &local_err);
+                                JOB_DEFAULT, pvebackup_co_dump_cb, dump_cb_block_size,
+                                pvebackup_complete_cb, di, 1, NULL, &local_err);
         if (!job || local_err != NULL) {
             error_setg(&backup_state.error, "backup_job_create failed");
             break;
@@ -4284,7 +4286,7 @@ static BlockJob *do_drive_backup(DriveBackup *backup, JobTxn *txn,
     job = backup_job_create(backup->job_id, bs, target_bs, backup->speed,
                             backup->sync, bmap, backup->compress,
                             backup->on_source_error, backup->on_target_error,
-                            job_flags, NULL, NULL, NULL, 0, txn, &local_err);
+                            job_flags, NULL, 0, NULL, NULL, 0, txn, &local_err);
     bdrv_unref(target_bs);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
@@ -4394,7 +4396,7 @@ BlockJob *do_blockdev_backup(BlockdevBackup *backup, JobTxn *txn,
     job = backup_job_create(backup->job_id, bs, target_bs, backup->speed,
                             backup->sync, bmap, backup->compress,
                             backup->on_source_error, backup->on_target_error,
-                            job_flags, NULL, NULL, NULL, 0, txn, &local_err);
+                            job_flags, NULL, 0, NULL, NULL, 0, txn, &local_err);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
     }

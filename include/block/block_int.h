@@ -1144,6 +1144,9 @@ void mirror_start(const char *job_id, BlockDriverState *bs,
  * @on_target_error: The action to take upon error writing to the target.
  * @creation_flags: Flags that control the behavior of the Job lifetime.
  *                  See @BlockJobCreateFlags
+ * @dump_cb: Callback for PVE backup code. Called for each data block when
+ *           target is NULL.
+ * @dump_cb_block_size: The minimum block size expected by dump_cb.
  * @cb: Completion function for the job.
  * @opaque: Opaque pointer value passed to @cb.
  * @txn: Transaction that this job is part of (may be NULL).
@@ -1160,6 +1163,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
                             BlockdevOnError on_target_error,
                             int creation_flags,
                             BackupDumpFunc *dump_cb,
+                            int dump_cb_block_size,
                             BlockCompletionFunc *cb, void *opaque,
                             int pause_count,
                             JobTxn *txn, Error **errp);
