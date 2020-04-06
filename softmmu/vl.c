@@ -2827,6 +2827,7 @@ void qemu_init(int argc, char **argv, char **envp)
     int optind;
     const char *optarg;
     const char *loadvm = NULL;
+    const char *loadstate = NULL;
     MachineClass *machine_class;
     const char *cpu_option;
     const char *vga_model = NULL;
@@ -3390,6 +3391,9 @@ void qemu_init(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_loadvm:
                 loadvm = optarg;
+                break;
+            case QEMU_OPTION_loadstate:
+                loadstate = optarg;
                 break;
             case QEMU_OPTION_full_screen:
                 dpy.has_full_screen = true;
@@ -4446,6 +4450,12 @@ void qemu_init(int argc, char **argv, char **envp)
             error_report_err(local_err);
             autostart = 0;
             exit(1);
+        }
+    } else if (loadstate) {
+        Error *local_err = NULL;
+        if (load_snapshot_from_blockdev(loadstate, &local_err) < 0) {
+            error_report_err(local_err);
+            autostart = 0;
         }
     }
     if (replay_mode != REPLAY_MODE_NONE) {

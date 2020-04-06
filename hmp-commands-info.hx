@@ -580,6 +580,19 @@ SRST
 ERST
 
     {
+        .name       = "savevm",
+        .args_type  = "",
+        .params     = "",
+        .help       = "show savevm status",
+        .cmd = hmp_info_savevm,
+    },
+
+SRST
+  ``info savevm``
+    Show savevm status.
+ERST
+
+    {
         .name       = "balloon",
         .args_type  = "",
         .params     = "",
