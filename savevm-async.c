@@ -338,7 +338,7 @@ void qmp_savevm_start(bool has_statefile, const char *statefile, Error **errp)
         goto restart;
     }
 
-    snap_state.file = qemu_fopen_ops(&snap_state, &block_file_ops);
+    snap_state.file = qemu_fopen_ops_sized(&snap_state, &block_file_ops, 4 * 1024 * 1024);
 
     if (!snap_state.file) {
         error_set(errp, ERROR_CLASS_GENERIC_ERROR, "failed to open '%s'", statefile);
@@ -454,7 +454,7 @@ int load_snapshot_from_blockdev(const char *filename, Error **errp)
     blk_op_block_all(be, blocker);
 
     /* restore the VM state */
-    f = qemu_fopen_ops(be, &loadstate_file_ops);
+    f = qemu_fopen_ops_sized(be, &loadstate_file_ops, 4 * 1024 * 1024);
     if (!f) {
         error_setg(errp, "Could not open VM state file");
         goto the_end;

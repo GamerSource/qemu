@@ -30,7 +30,7 @@
 #include "trace.h"
 #include "qapi/error.h"
 
-#define IO_BUF_SIZE 32768
+#define DEFAULT_IO_BUF_SIZE 32768
 #define MAX_IOV_SIZE MIN(IOV_MAX, 64)
 
 struct QEMUFile {
@@ -45,7 +45,8 @@ struct QEMUFile {
                     when reading */
     int buf_index;
     int buf_size; /* 0 when writing */
-    uint8_t buf[IO_BUF_SIZE];
+    size_t buf_allocated_size;
+    uint8_t *buf;
 
     DECLARE_BITMAP(may_free, MAX_IOV_SIZE);
     struct iovec iov[MAX_IOV_SIZE];
@@ -101,7 +102,7 @@ bool qemu_file_mode_is_not_valid(const char *mode)
     return false;
 }
 
-QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
+QEMUFile *qemu_fopen_ops_sized(void *opaque, const QEMUFileOps *ops, size_t buffer_size)
 {
     QEMUFile *f;
 
@@ -109,7 +110,15 @@ QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
 
     f->opaque = opaque;
     f->ops = ops;
+    f->buf_allocated_size = buffer_size;
+    f->buf = malloc(buffer_size);
+
     return f;
+}
+
+QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
+{
+    return qemu_fopen_ops_sized(opaque, ops, DEFAULT_IO_BUF_SIZE);
 }
 
 
@@ -346,7 +355,7 @@ static ssize_t qemu_fill_buffer(QEMUFile *f)
     }
 
     len = f->ops->get_buffer(f->opaque, f->buf + pending, f->pos,
-                             IO_BUF_SIZE - pending, &local_error);
+                             f->buf_allocated_size - pending, &local_error);
     if (len > 0) {
         f->buf_size += len;
         f->pos += len;
@@ -386,6 +395,9 @@ int qemu_fclose(QEMUFile *f)
             ret = ret2;
         }
     }
+
+    free(f->buf);
+
     /* If any error was spotted before closing, we should report it
      * instead of the close() return value.
      */
@@ -435,7 +447,7 @@ static void add_buf_to_iovec(QEMUFile *f, size_t len)
 {
     if (!add_to_iovec(f, f->buf + f->buf_index, len, false)) {
         f->buf_index += len;
-        if (f->buf_index == IO_BUF_SIZE) {
+        if (f->buf_index == f->buf_allocated_size) {
             qemu_fflush(f);
         }
     }
@@ -461,7 +473,7 @@ void qemu_put_buffer(QEMUFile *f, const uint8_t *buf, size_t size)
     }
 
     while (size > 0) {
-        l = IO_BUF_SIZE - f->buf_index;
+        l = f->buf_allocated_size - f->buf_index;
         if (l > size) {
             l = size;
         }
@@ -508,8 +520,8 @@ size_t qemu_peek_buffer(QEMUFile *f, uint8_t **buf, size_t size, size_t offset)
     size_t index;
 
     assert(!qemu_file_is_writable(f));
-    assert(offset < IO_BUF_SIZE);
-    assert(size <= IO_BUF_SIZE - offset);
+    assert(offset < f->buf_allocated_size);
+    assert(size <= f->buf_allocated_size - offset);
 
     /* The 1st byte to read from */
     index = f->buf_index + offset;
@@ -559,7 +571,7 @@ size_t qemu_get_buffer(QEMUFile *f, uint8_t *buf, size_t size)
         size_t res;
         uint8_t *src;
 
-        res = qemu_peek_buffer(f, &src, MIN(pending, IO_BUF_SIZE), 0);
+        res = qemu_peek_buffer(f, &src, MIN(pending, f->buf_allocated_size), 0);
         if (res == 0) {
             return done;
         }
@@ -593,7 +605,7 @@ size_t qemu_get_buffer(QEMUFile *f, uint8_t *buf, size_t size)
  */
 size_t qemu_get_buffer_in_place(QEMUFile *f, uint8_t **buf, size_t size)
 {
-    if (size < IO_BUF_SIZE) {
+    if (size < f->buf_allocated_size) {
         size_t res;
         uint8_t *src;
 
@@ -618,7 +630,7 @@ int qemu_peek_byte(QEMUFile *f, int offset)
     int index = f->buf_index + offset;
 
     assert(!qemu_file_is_writable(f));
-    assert(offset < IO_BUF_SIZE);
+    assert(offset < f->buf_allocated_size);
 
     if (index >= f->buf_size) {
         qemu_fill_buffer(f);
@@ -770,7 +782,7 @@ static int qemu_compress_data(z_stream *stream, uint8_t *dest, size_t dest_len,
 ssize_t qemu_put_compression_data(QEMUFile *f, z_stream *stream,
                                   const uint8_t *p, size_t size)
 {
-    ssize_t blen = IO_BUF_SIZE - f->buf_index - sizeof(int32_t);
+    ssize_t blen = f->buf_allocated_size - f->buf_index - sizeof(int32_t);
 
     if (blen < compressBound(size)) {
         return -1;
